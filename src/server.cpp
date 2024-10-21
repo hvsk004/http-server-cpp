@@ -76,6 +76,8 @@ int main(int argc, char **argv) {
 
   std::string notFounderror = "HTTP/1.1 404 Not Found\r\n\r\n";
 
+  std::string contentResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ";
+
   // if(path != "/") {
   //   send(client,notFounderror.c_str(),notFounderror.size(),0);
   // }
@@ -91,6 +93,13 @@ int main(int argc, char **argv) {
   }
   else if(path == "/") {
     send(client,message.c_str(),message.size(),0);
+  }
+  else if(path == "/user-agent") {
+    std::string input = request.substr(request.find("User-Agent") + 12,request.find("\r\n"));
+    input = input.substr(0, input.find("\r\n"));
+    std::cout << "User Agent : " << input << std::endl;
+    std::string response = contentResponse + std::to_string(input.size()) + "\r\n\r\n" + input;
+    send(client,response.c_str(),response.size(),0);
   }
   else {
     send(client,notFounderror.c_str(),notFounderror.size(),0);
