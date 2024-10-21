@@ -59,7 +59,29 @@ int main(int argc, char **argv) {
   
   std::string message = "HTTP/1.1 200 OK\r\n\r\n";
 
-  send(client,message.c_str(),message.size(),0);  
+  // send(client,message.c_str(),message.size(),0);
+
+  //Stage - Extracting URL Path from request
+  char buffer[1024] = {0};
+
+  read(client, buffer, 1024);
+
+  std::string request(buffer);
+
+  std::cout << "Request: " << request << std::endl;
+
+  std::string path = request.substr(request.find("GET") + 4, request.find("HTTP") - 5);
+
+  std::cout << "Path : " << path << std::endl;
+
+  std::string notFounderror = "HTTP/1.1 404 Not Found\r\n\r\n";
+
+  if(path != "/") {
+    send(client,notFounderror.c_str(),notFounderror.size(),0);
+  }
+  else {
+    send(client,message.c_str(),message.size(),0);
+  }
 
   close(server_fd);
 
