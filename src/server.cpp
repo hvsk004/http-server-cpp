@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
   
   std::string message = "HTTP/1.1 200 OK\r\n\r\n";
 
-  // send(client,message.c_str(),message.size(),0);
+  // send(client,message.c_str(),message.size(),0); 
 
   //Stage - Extracting URL Path from request
   char buffer[1024] = {0};
@@ -76,13 +76,25 @@ int main(int argc, char **argv) {
 
   std::string notFounderror = "HTTP/1.1 404 Not Found\r\n\r\n";
 
-  if(path != "/") {
-    send(client,notFounderror.c_str(),notFounderror.size(),0);
+  // if(path != "/") {
+  //   send(client,notFounderror.c_str(),notFounderror.size(),0);
+  // }
+  // else {
+  //   send(client,message.c_str(),message.size(),0);
+  // }
+
+  if(path.find("echo") != std::string::npos) {
+    std::string input = path.substr(path.find("echo") + 5);
+    std::cout << input << std::endl;
+    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + std::to_string(input.size()) + "\r\n\r\n" + input;
+    send(client,response.c_str(),response.size(),0);
   }
-  else {
+  else if(path == "/") {
     send(client,message.c_str(),message.size(),0);
   }
-
+  else {
+    send(client,notFounderror.c_str(),notFounderror.size(),0);
+  }
   close(server_fd);
 
   return 0;
