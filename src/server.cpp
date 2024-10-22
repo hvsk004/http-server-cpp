@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <functional>
 #include <atomic>
+#include <fstream>
 
 class ThreadPool {
 public:
@@ -73,7 +74,7 @@ void ThreadPool::worker() {
     }
 }
 
-void handleClient(int client) {
+void handleClient(int client,int argc, char **argv) {
     std::cout << "Client connected\n";
     
     char buffer[1024] = {0};
@@ -86,6 +87,7 @@ void handleClient(int client) {
 
     std::string notFoundError = "HTTP/1.1 404 Not Found\r\n\r\n";
     std::string contentResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ";
+    std::string contentResponse2 = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ";
 
     if (path.find("echo") != std::string::npos) {
         std::string input = path.substr(path.find("echo") + 5);
@@ -101,6 +103,26 @@ void handleClient(int client) {
         std::cout << "User Agent: " << input << std::endl;
         std::string response = contentResponse + std::to_string(input.size()) + "\r\n\r\n" + input;
         send(client, response.c_str(), response.size(), 0);
+    }
+    else if(path.find("file") != std::string::npos) {
+        std::string filename = path.substr(path.find("file") + 5);
+        std::cout << "Filename: " << filename << std::endl;
+        std::string directory = argc > 1 ? argv[2] : "./"; // Default to current directory if no argument is 
+        std::cout << "Directory : " << directory << std::endl;
+        std::fstream file(directory + filename, std::ios::in);
+        if(file.is_open()) {
+            std::string content = "";
+            std::string line;
+            while(getline(file,line)) {
+                content += line;
+            }
+            content = content.substr(0,content.find("\r\n"));
+            std::string response = contentResponse2 + std::to_string(content.size()) + "\r\n\r\n" + content;
+            send(client, response.c_str(), response.size(), 0);
+        }
+        else {
+            send(client, notFoundError.c_str(), notFoundError.size(), 0);
+        }
     } else {
         send(client, notFoundError.c_str(), notFoundError.size(), 0);
     }
@@ -109,6 +131,7 @@ void handleClient(int client) {
 }
 
 int main(int argc, char **argv) {
+    
     std::cout << std::unitbuf; // Ensure all output is flushed immediately
     std::cerr << std::unitbuf;
 
@@ -153,8 +176,8 @@ int main(int argc, char **argv) {
         }
 
         // Enqueue the client handling task
-        pool.enqueue([client]() {
-            handleClient(client);
+        pool.enqueue([client,argc,argv]() {
+            handleClient(client,argc,argv);
         });
     }
 
