@@ -15,15 +15,15 @@
 #include <functional>
 #include <atomic>
 #include <fstream>
+#include <map>
 
 class HttpRequest
 {
 public:
   std::string method;
   std::string path;
-  std::string userAgent;
   std::string body;
-
+  std::map<std::string, std::string> headers;
   HttpRequest(const std::string &request)
   {
     parseRequest(request);
@@ -33,34 +33,66 @@ private:
   void parseRequest(const std::string &request)
   {
     method = request.substr(0, request.find(" "));
-    path = request.substr(request.find(method) + method.size() + 1, request.find("HTTP") - method.size() - 2);
+    path = request.substr(request.find(" ") + 1, request.find("HTTP") - request.find(" ") - 2);
 
-    auto uaPos = request.find("User-Agent:");
-    if (uaPos != std::string::npos)
-    {
-      userAgent = request.substr(uaPos + 12);
-      userAgent = userAgent.substr(0, userAgent.find("\r\n"));
-    }
-
+    // Extract body for POST requests
     if (method == "POST")
     {
       body = request.substr(request.find("\r\n\r\n") + 4);
     }
+
+    // Extract headers
+    size_t headersStart = request.find("\r\n") + 2;
+    size_t headersEnd = request.find("\r\n\r\n");
+    if (headersStart == std::string::npos || headersEnd == std::string::npos || headersStart >= headersEnd)
+    {
+      // Handle error: invalid headers section
+      return;
+    }
+    std::string headersSection = request.substr(headersStart, headersEnd - headersStart);
+    size_t pos = 0;
+    while ((pos = headersSection.find("\r\n")) != std::string::npos)
+    {
+      std::string line = headersSection.substr(0, pos);
+      size_t colonPos = line.find(": ");
+      if (colonPos != std::string::npos)
+      {
+        std::string key = line.substr(0, colonPos);
+        std::string value = line.substr(colonPos + 2);
+        headers[key] = value;
+      }
+      headersSection.erase(0, pos + 2);
+    }
+    if (!headersSection.empty())
+    {
+      size_t colonPos = headersSection.find(": ");
+      if (colonPos != std::string::npos)
+      {
+        std::string key = headersSection.substr(0, colonPos);
+        std::string value = headersSection.substr(colonPos + 2);
+        headers[key] = value;
+      }
+    }
   }
 };
-
 class HttpResponse
 {
 public:
   std::string status;
-  std::string headers;
+  std::map<std::string, std::string> headers;
   std::string body;
 
-  HttpResponse() : status("HTTP/1.1 200 OK"), headers("Content-Type: text/plain\r\n") {}
+  HttpResponse() : status("HTTP/1.1 200 OK") {}
 
   std::string toString()
   {
-    return status + "\r\n" + headers + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    std::string response = status + "\r\n";
+    for (const auto &[key, value] : headers)
+    {
+      response += key + ": " + value + "\r\n";
+    }
+    response += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    return response;
   }
 };
 
@@ -148,8 +180,12 @@ void handleClient(int client, int argc, char **argv)
   buffer[bytesRead] = '\0';
   HttpRequest request(buffer);
   HttpResponse response;
-
   std::cout << "Request: " << request.method << " " << request.path << std::endl;
+  std::cout << "Request Headers: " << std::endl;
+  for (auto &i : request.headers)
+  {
+    std::cout << i.first << " : " << i.second << std::endl;
+  }
 
   if (request.method == "GET")
   {
@@ -160,10 +196,12 @@ void handleClient(int client, int argc, char **argv)
     else if (request.path.find("echo") != std::string::npos)
     {
       response.body = request.path.substr(request.path.find("echo") + 5);
+      response.headers["Content-Type"] = "text/plain";
     }
     else if (request.path == "/user-agent")
     {
-      response.body = request.userAgent;
+      response.body = request.headers["User-Agent"];
+      response.headers["Content-Type"] = "text/plain";
     }
     else if (request.path.find("file") != std::string::npos)
     {
@@ -174,7 +212,7 @@ void handleClient(int client, int argc, char **argv)
       if (file.is_open())
       {
         response.body.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        response.headers = "Content-Type: application/octet-stream\r\n";
+        response.headers["Content-Type"] = "application/octet-stream";
         file.close();
       }
       else
@@ -200,7 +238,7 @@ void handleClient(int client, int argc, char **argv)
         file << request.body;
         file.close();
         response.status = "HTTP/1.1 201 Created";
-        response.headers = "Content-Type: application/octet-stream\r\n";
+        response.headers["Content-Type"] = "application/octet-stream";
       }
       else
       {
@@ -212,7 +250,12 @@ void handleClient(int client, int argc, char **argv)
   {
     response.status = "HTTP/1.1 404 Not Found";
   }
-
+  auto contentEncodingIt = request.headers.find("Accept-Encoding");
+  if (contentEncodingIt != request.headers.end() && contentEncodingIt->second != "invalid-encoding")
+  {
+    std::cout << "Setting Content Encoding header : " << contentEncodingIt->second << std::endl;
+    response.headers["Content-Encoding"] = contentEncodingIt->second;
+  }
   std::string res = response.toString();
   send(client, res.c_str(), res.size(), 0);
   close(client);
