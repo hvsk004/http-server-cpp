@@ -16,6 +16,54 @@
 #include <atomic>
 #include <fstream>
 
+class HttpRequest
+{
+public:
+  std::string method;
+  std::string path;
+  std::string userAgent;
+  std::string body;
+
+  HttpRequest(const std::string &request)
+  {
+    parseRequest(request);
+  }
+
+private:
+  void parseRequest(const std::string &request)
+  {
+    method = request.substr(0, request.find(" "));
+    path = request.substr(request.find(method) + method.size() + 1, request.find("HTTP") - method.size() - 2);
+
+    auto uaPos = request.find("User-Agent:");
+    if (uaPos != std::string::npos)
+    {
+      userAgent = request.substr(uaPos + 12);
+      userAgent = userAgent.substr(0, userAgent.find("\r\n"));
+    }
+
+    if (method == "POST")
+    {
+      body = request.substr(request.find("\r\n\r\n") + 4);
+    }
+  }
+};
+
+class HttpResponse
+{
+public:
+  std::string status;
+  std::string headers;
+  std::string body;
+
+  HttpResponse() : status("HTTP/1.1 200 OK"), headers("Content-Type: text/plain\r\n") {}
+
+  std::string toString()
+  {
+    return status + "\r\n" + headers + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+  }
+};
+
 class ThreadPool
 {
 public:
@@ -26,7 +74,6 @@ public:
 private:
   std::vector<std::thread> workers;
   std::queue<std::function<void()>> tasks;
-
   std::mutex queueMutex;
   std::condition_variable condition;
   std::atomic<bool> stop;
@@ -98,109 +145,76 @@ void handleClient(int client, int argc, char **argv)
     return;
   }
 
-  buffer[bytesRead] = '\0'; // Null terminate the buffer
-  std::string request(buffer);
-  std::cout << "Request: " << request << std::endl;
+  buffer[bytesRead] = '\0';
+  HttpRequest request(buffer);
+  HttpResponse response;
 
-  std::string type = request.substr(0, request.find(" "));
-  std::string path;
+  std::cout << "Request: " << request.method << " " << request.path << std::endl;
 
-  if (type == "GET")
+  if (request.method == "GET")
   {
-    path = request.substr(request.find("GET") + 4, request.find("HTTP") - 5);
-  }
-  else if (type == "POST")
-  {
-    path = request.substr(request.find("POST") + 5, request.find("HTTP") - 5);
-  }
-  else
-  {
-    send(client, "HTTP/1.1 405 Method Not Allowed\r\n\r\n", 39, 0);
-    close(client);
-    return;
-  }
-
-  std::cout << "Path: " << path << std::endl;
-
-  std::string notFoundError = "HTTP/1.1 404 Not Found\r\n\r\n";
-  std::string contentResponse = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ";
-  std::string contentResponse2 = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: ";
-  std::string contentResponse3 = "HTTP/1.1 201 Created\r\n\r\n";
-
-  if (type == "GET" && path.find("echo") != std::string::npos)
-  {
-    std::string input = path.substr(path.find("echo") + 5);
-    std::cout << input << std::endl;
-    std::string response = contentResponse + std::to_string(input.size()) + "\r\n\r\n" + input;
-    send(client, response.c_str(), response.size(), 0);
-  }
-  else if (type == "GET" && path == "/")
-  {
-    std::string message = "HTTP/1.1 200 OK\r\n\r\n";
-    send(client, message.c_str(), message.size(), 0);
-  }
-  else if (path == "/user-agent")
-  {
-    std::string input = request.substr(request.find("User-Agent:") + 12);
-    input = input.substr(0, input.find("\r\n"));
-    std::cout << "User Agent: " << input << std::endl;
-    std::string response = contentResponse + std::to_string(input.size()) + "\r\n\r\n" + input;
-    send(client, response.c_str(), response.size(), 0);
-  }
-  else if (type == "GET" && path.find("file") != std::string::npos)
-  {
-    std::string filename = path.substr(path.find("file") + 5);
-    std::cout << "Filename: " << filename << std::endl;
-    std::string directory = argc > 1 ? argv[1] : "./"; // Use argv[1] for directory
-    std::cout << "Directory: " << directory << std::endl;
-    std::ifstream file(directory + filename);
-
-    if (file.is_open())
+    if (request.path == "/")
     {
-      std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-      std::string response = contentResponse2 + std::to_string(content.size()) + "\r\n\r\n" + content;
-      send(client, response.c_str(), response.size(), 0);
-      file.close();
+      response.body = "Welcome!";
+    }
+    else if (request.path.find("echo") != std::string::npos)
+    {
+      response.body = request.path.substr(request.path.find("echo") + 5);
+    }
+    else if (request.path == "/user-agent")
+    {
+      response.body = request.userAgent;
+    }
+    else if (request.path.find("file") != std::string::npos)
+    {
+      std::string filename = request.path.substr(request.path.find("file") + 5);
+      std::string directory = argc > 1 ? argv[2] : "./";
+      std::ifstream file(directory + filename);
+
+      if (file.is_open())
+      {
+        response.body.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        response.headers = "Content-Type: application/octet-stream\r\n";
+        file.close();
+      }
+      else
+      {
+        response.status = "HTTP/1.1 404 Not Found";
+      }
     }
     else
     {
-      send(client, notFoundError.c_str(), notFoundError.size(), 0);
+      response.status = "HTTP/1.1 404 Not Found";
     }
   }
-  else if (type == "POST" && path.find("files") != std::string::npos)
+  else if (request.method == "POST")
   {
-    std::string filename = path.substr(path.find("files") + 6);
-    std::cout << "Filename: " << filename << std::endl;
-    std::string directory = argc > 1 ? argv[1] : "./"; // Use argv[1] for directory
-    std::cout << "Directory: " << directory << std::endl;
-    std::string input = request.substr(request.find("\r\n\r\n") + 4);
-    std::string fullPath = directory + filename;
-
-    std::cout << "Full Path: " << fullPath << std::endl;
-
-    std::ofstream file(fullPath, std::ios::out | std::ios::app); // Open in append mode
-
-    if (file.is_open())
+    if (request.path.find("files") != std::string::npos)
     {
-      file << input; // Write the input to the file
-      std::cout << "Content Written to file: " << input << std::endl;
-      file.close();
+      std::string filename = request.path.substr(request.path.find("files") + 6);
+      std::string directory = argc > 1 ? argv[2] : "./";
+      std::ofstream file(directory + filename);
+
+      if (file.is_open())
+      {
+        file << request.body;
+        file.close();
+        response.status = "HTTP/1.1 201 Created";
+        response.headers = "Content-Type: application/octet-stream\r\n";
+      }
+      else
+      {
+        response.status = "HTTP/1.1 404 Not Found";
+      }
     }
-    else
-    {
-      std::cerr << "Error opening file for writing: " << fullPath << std::endl;
-      send(client, notFoundError.c_str(), notFoundError.size(), 0);
-      close(client);
-      return;
-    }
-    std::cout << "Request complete\n";
-    send(client, contentResponse3.c_str(), contentResponse3.size(), 0);
   }
   else
   {
-    send(client, notFoundError.c_str(), notFoundError.size(), 0);
+    response.status = "HTTP/1.1 404 Not Found";
   }
 
+  std::string res = response.toString();
+  send(client, res.c_str(), res.size(), 0);
   close(client);
 }
 
@@ -242,7 +256,7 @@ int main(int argc, char **argv)
   }
 
   std::cout << "Waiting for a client to connect...\n";
-  ThreadPool pool(4); // Create a thread pool with 4 worker threads
+  ThreadPool pool(4);
 
   while (true)
   {
@@ -252,10 +266,9 @@ int main(int argc, char **argv)
     if (client < 0)
     {
       std::cerr << "accept failed\n";
-      continue; // Just continue on failure to accept
+      continue;
     }
 
-    // Enqueue the client handling task
     pool.enqueue([client, argc, argv]()
                  { handleClient(client, argc, argv); });
   }
