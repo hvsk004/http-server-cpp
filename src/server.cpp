@@ -16,6 +16,7 @@
 #include <atomic>
 #include <fstream>
 #include <map>
+#include <sstream>
 
 class HttpRequest
 {
@@ -164,10 +165,25 @@ void ThreadPool::worker()
   }
 }
 
+std::vector<std::string> split(const std::string &s, char delimiter)
+{
+  std::vector<std::string> tokens;
+  std::string token;
+  std::istringstream tokenStream(s);
+  while (std::getline(tokenStream, token, delimiter))
+  {
+    // trim the token to remove unecessary spaces infront and back
+    token.erase(0, token.find_first_not_of(" \n\r\t"));
+    token.erase(token.find_last_not_of(" \n\r\t") + 1);
+    tokens.push_back(token);
+  }
+  return tokens;
+}
+
 void handleClient(int client, int argc, char **argv)
 {
   std::cout << "Client connected\n";
-  char buffer[4096] = {0};
+  char buffer[1024 * 8] = {0};
   ssize_t bytesRead = read(client, buffer, sizeof(buffer) - 1);
 
   if (bytesRead < 0)
@@ -231,14 +247,21 @@ void handleClient(int client, int argc, char **argv)
     {
       std::string filename = request.path.substr(request.path.find("files") + 6);
       std::string directory = argc > 1 ? argv[2] : "./";
+      std::cout << "Directory: " << directory << std::endl;
+      std::string fullPath = directory + filename;
+      std::cout << "Full Path: " << fullPath << std::endl;
       std::ofstream file(directory + filename);
 
       if (file.is_open())
       {
+        std::cout << "Writing to file" << std::endl;
         file << request.body;
+        std::cout << "Finished writing to file" << std::endl;
         file.close();
+        std::cout << "Closed file" << std::endl;
         response.status = "HTTP/1.1 201 Created";
         response.headers["Content-Type"] = "application/octet-stream";
+        response.body = request.body;
       }
       else
       {
@@ -251,11 +274,27 @@ void handleClient(int client, int argc, char **argv)
     response.status = "HTTP/1.1 404 Not Found";
   }
   auto contentEncodingIt = request.headers.find("Accept-Encoding");
-  if (contentEncodingIt != request.headers.end() && contentEncodingIt->second != "invalid-encoding")
+
+  if (contentEncodingIt != request.headers.end())
   {
-    std::cout << "Setting Content Encoding header : " << contentEncodingIt->second << std::endl;
-    response.headers["Content-Encoding"] = contentEncodingIt->second;
+    std::string encodings = contentEncodingIt->second;
+    std::vector<std::string> encodingsArray = split(encodings, ',');
+    bool gzip = false;
+    for (auto &i : encodingsArray)
+    {
+      if (i == "gzip")
+      {
+        gzip = true;
+        std::cout << "Setting gzip true" << std::endl;
+      }
+      std::cout << i << std::endl;
+    }
+    if (gzip)
+    {
+      response.headers["Content-Encoding"] = "gzip";
+    }
   }
+
   std::string res = response.toString();
   send(client, res.c_str(), res.size(), 0);
   close(client);
