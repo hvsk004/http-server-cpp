@@ -17,6 +17,44 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <zlib.h>
+
+std::string compressGzip(const std::string &str, int compression_level = Z_BEST_COMPRESSION)
+{
+  z_stream zs;
+  memset(&zs, 0, sizeof(zs));
+  if (deflateInit2(&zs, compression_level, Z_DEFLATED, 15 | 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+  {
+    throw std::runtime_error("deflateInit2 failed.");
+  }
+
+  zs.next_in = (Bytef *)str.data();
+  zs.avail_in = str.size();
+  int ret;
+  char outbuffer[32768];
+  std::string outstring;
+
+  do
+  {
+    zs.next_out = reinterpret_cast<Bytef *>(outbuffer);
+    zs.avail_out = sizeof(outbuffer);
+    ret = deflate(&zs, Z_FINISH);
+
+    if (outstring.size() < zs.total_out)
+    {
+      outstring.append(outbuffer, zs.total_out - outstring.size());
+    }
+  } while (ret == Z_OK);
+
+  deflateEnd(&zs);
+
+  if (ret != Z_STREAM_END)
+  {
+    throw std::runtime_error("Exception during zlib compression.");
+  }
+
+  return outstring;
+}
 
 class HttpRequest
 {
@@ -197,12 +235,26 @@ void handleClient(int client, int argc, char **argv)
   HttpRequest request(buffer);
   HttpResponse response;
   std::cout << "Request: " << request.method << " " << request.path << std::endl;
-  std::cout << "Request Headers: " << std::endl;
-  for (auto &i : request.headers)
+
+  bool gzip = false;
+  auto contentEncodingIt = request.headers.find("Accept-Encoding");
+
+  if (contentEncodingIt != request.headers.end())
   {
-    std::cout << i.first << " : " << i.second << std::endl;
+    std::vector<std::string> encodingsArray = split(contentEncodingIt->second, ',');
+    for (const auto &encoding : encodingsArray)
+    {
+      if (encoding == "gzip")
+      {
+        gzip = true;
+        std::cout << "Setting gzip true" << std::endl;
+        response.headers["Content-Encoding"] = "gzip";
+        break;
+      }
+    }
   }
 
+  // Handle GET requests
   if (request.method == "GET")
   {
     if (request.path == "/")
@@ -211,7 +263,11 @@ void handleClient(int client, int argc, char **argv)
     }
     else if (request.path.find("echo") != std::string::npos)
     {
-      response.body = request.path.substr(request.path.find("echo") + 5);
+      std::string input = request.path.substr(request.path.find("echo") + 5);
+      std::cout << "Echoing: " << input << std::endl;
+      std::string output = gzip ? compressGzip(input) : input;
+      response.body = output;
+      std::cout << "Compressed body: " << output << std::endl;
       response.headers["Content-Type"] = "text/plain";
     }
     else if (request.path == "/user-agent")
@@ -222,14 +278,27 @@ void handleClient(int client, int argc, char **argv)
     else if (request.path.find("file") != std::string::npos)
     {
       std::string filename = request.path.substr(request.path.find("file") + 5);
-      std::string directory = argc > 1 ? argv[2] : "./";
-      std::ifstream file(directory + filename);
+      std::cout << "Filename: " << filename << std::endl;
+      std::string directory = argc > 1 ? argv[2] : "./"; // Default to current directory if no argument is provided
+      std::cout << "Directory: " << directory << std::endl;
 
+      std::fstream file(directory + filename, std::ios::in);
       if (file.is_open())
       {
-        response.body.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        std::string content;
+        std::string line;
+
+        while (getline(file, line))
+        {
+          content += line; // Append a newline for line separation
+        }
+
+        response.body = content;                                             // Set the content of the response body
+        response.headers["Content-Type"] = "text/plain";                     // Set appropriate content type
+        response.headers["Content-Length"] = std::to_string(content.size()); // Update Content-Length
+
+        response.status = "HTTP/1.1 200 OK"; // Set response status to OK
         response.headers["Content-Type"] = "application/octet-stream";
-        file.close();
       }
       else
       {
@@ -241,24 +310,22 @@ void handleClient(int client, int argc, char **argv)
       response.status = "HTTP/1.1 404 Not Found";
     }
   }
+  // Handle POST requests
   else if (request.method == "POST")
   {
+    std::cout << "method : post" << std::endl;
     if (request.path.find("files") != std::string::npos)
     {
       std::string filename = request.path.substr(request.path.find("files") + 6);
       std::string directory = argc > 1 ? argv[2] : "./";
-      std::cout << "Directory: " << directory << std::endl;
       std::string fullPath = directory + filename;
-      std::cout << "Full Path: " << fullPath << std::endl;
-      std::ofstream file(directory + filename);
 
+      // Use std::fstream with `std::ios::out` and `std::ios::app` flags to create file if it doesn't exist
+      std::fstream file(fullPath, std::ios::out | std::ios::app);
       if (file.is_open())
       {
-        std::cout << "Writing to file" << std::endl;
         file << request.body;
-        std::cout << "Finished writing to file" << std::endl;
         file.close();
-        std::cout << "Closed file" << std::endl;
         response.status = "HTTP/1.1 201 Created";
         response.headers["Content-Type"] = "application/octet-stream";
         response.body = request.body;
@@ -273,28 +340,9 @@ void handleClient(int client, int argc, char **argv)
   {
     response.status = "HTTP/1.1 404 Not Found";
   }
-  auto contentEncodingIt = request.headers.find("Accept-Encoding");
+  response.headers["Content-Length"] = std::to_string(response.body.size());
 
-  if (contentEncodingIt != request.headers.end())
-  {
-    std::string encodings = contentEncodingIt->second;
-    std::vector<std::string> encodingsArray = split(encodings, ',');
-    bool gzip = false;
-    for (auto &i : encodingsArray)
-    {
-      if (i == "gzip")
-      {
-        gzip = true;
-        std::cout << "Setting gzip true" << std::endl;
-      }
-      std::cout << i << std::endl;
-    }
-    if (gzip)
-    {
-      response.headers["Content-Encoding"] = "gzip";
-    }
-  }
-
+  // Send the response to the client
   std::string res = response.toString();
   send(client, res.c_str(), res.size(), 0);
   close(client);
